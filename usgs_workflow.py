@@ -1,219 +1,172 @@
 # ==============================================================================
-# AGISOFT METASHAPE - USGS STANDARDI GRADUAL SELECTION OTOMASYONU
-# ==============================================================================
-# Referans: USGS Open-File Report 2021-1039
-# İş Akışı: Adım 11 (Geometry), Adım 12 (Pixel Matching), Adım 13 (Reprojection)
-#           ve Adım 15 (Tie Point Accuracy Sıkılaştırma)
-#
-# ÖNEMLİ: Bu scripti çalıştırmadan önce lütfen şunları kontrol edin:
-# 1. Align Photos aşamasında "Tie point limit" 0 (sıfır) olarak ayarlanmış olmalı.
-# 2. GCP (Yer Kontrol Noktaları) işaretlenmiş ve aktif (tikli) olmalı.
-# 3. Reference Settings kısmında "Marker Accuracy" (örn: 0.02m) doğru girilmeli.
-# 4. İşleme başlamadan önce Chunk üzerinde sağ tık -> "Duplicate" ile yedek alınız.
+# Metashape USGS Otomasyonu - v1.3 Safe Mode (USGS Standardına Uyumlu)
+# DAA Mühendislik Bilişim - Deniz Aydınalp
+# Güncelleme: 2025-12-09 | API Hatası Çözüldü & Tie Point Sıkılaştırması Eklendi
 # ==============================================================================
 
 import Metashape
 import math
+from datetime import datetime
+
+# --- KRİTİK SABİT DEĞERLER (M3E ve USGS Standartları) ---
+TIE_POINT_ACCURACY_START = 1.0  # Safe Mode başlangıç değeri (Overfitting'i önlemek için yüksek başlar)
+TIE_POINT_ACCURACY_MIN = 0.3   # Ulaşılmak istenen en sıkı Tie Point değeri
+TIE_POINT_REDUCTION_STEP = 0.2 # Her iterasyonda ne kadar azaltılacağı (Kademeli Sıkılaştırma)
+
+CAMERA_ACCURACY_GCP_OVERRIDE = 10.0 # RTK/GCP çakışmasında GCP'ye güvenmek için (metre)
+REPROJECTION_ERROR_TARGET = 0.3 # USGS Hedefi (piksel)
+OPTIMIZATION_TOLERANCE = 0.0001 # Iterasyon durma eşiği (metre farkı)
+
+def log_message(message, level=Metashape.app.Information):
+    """Metashape konsoluna tarihli ve seviyeli log mesajı yazar."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    Metashape.app.log(f"{timestamp} | {message}", level)
+
+def check_stop_criteria(prev_rmse):
+    """
+    USGS standardında optimizasyonun durma kriterini (Marker RMSE) kontrol eder.
+    Metashape API v2.x uyumlu: m.residual.norm() kullanır.
+    """
+    chunk = Metashape.app.document.chunk
+    
+    total_error_sq = 0.0
+    num_markers = 0
+    
+    for m in chunk.markers:
+        # Yalnızca referansı etkin olan (GCP) noktaları kontrol et.
+        if m.reference.enabled:
+            try:
+                # KRİTİK DÜZELTME: Marker'ın 3D kalıntı hatasının vektörel büyüklüğünü alıyoruz.
+                error = m.residual.norm()
+            except AttributeError:
+                log_message("Hata: Metashape.Marker objesi 'residual' niteliğine sahip değil.", Metashape.app.Critical)
+                return True # Hata durumunda döngüyü sonlandır
+            
+            total_error_sq += error ** 2
+            num_markers += 1
+
+    if num_markers == 0:
+        log_message("Referansı etkin marker (GCP) bulunamadı. Durdurma kriteri uygulanamaz.", Metashape.app.Warning)
+        return False
+    
+    # Marker'ların Toplam RMSE (metre cinsinden) hesaplama
+    current_rmse = (total_error_sq / num_markers) ** 0.5 if num_markers > 0 else 0.0
+    
+    log_message(f"Optimizasyon Döngüsü - Güncel Marker RMSE (m): {current_rmse:.4f} m", Metashape.app.Information)
+    
+    # Durdurma Kriteri Mantığı: RMSE farkı eşikten küçükse durdur
+    if abs(current_rmse - prev_rmse) < OPTIMIZATION_TOLERANCE:
+        log_message(f"Durdurma Kriteri Sağlandı: RMSE farkı toleransın altında.", Metashape.app.Information)
+        return True
+    
+    return current_rmse # Yeni RMSE değerini döndür
 
 def usgs_professional_workflow():
-    print(">>> USGS Standartlarında Gradual Selection İş Akışı Başlatılıyor...")
+    """
+    USGS Standartlarına uygun Fotogrametrik İş Akışı (Optimize Cameras sonrası başlar)
+    """
     
-    doc = Metashape.app.document
-    chunk = doc.chunk
-    
-    if not chunk:
-        print("HATA: Lütfen projenizi açın.")
+    if not Metashape.app.document.chunk:
+        log_message("Hata: Aktif chunk (iş parçası) bulunamadı.", Metashape.app.Critical)
         return
 
-    # --- AYARLAR VE LİMİTLER ---
+    chunk = Metashape.app.document.chunk
+    log_message("--- DAA Mühendislik Fotogrametri USGS Workflow v1.3 Başladı ---", Metashape.app.Information)
+
+    # 1. USGS Step 11: Kamera Referans Ayarları (RTK/GCP Çakışması Kontrolü)
+    log_message(f"--- Adım 11: Kamera Referans Ayarları (M3E) ---", Metashape.app.Information)
     
-    # Başlangıç Nokta Sayısı (Güvenlik kilidi için referans)
-    INITIAL_POINTS = len(chunk.point_cloud.points)
-    MIN_POINT_LIMIT = INITIAL_POINTS * 0.10  # Orijinal verinin %10'u kalırsa DUR
+    # Kamera doğruluğunu GCP'ye mutlak güven duymak için 10m'ye ayarlama
+    for camera in chunk.cameras:
+        if camera.reference.enabled:
+            camera.reference.accuracy = Metashape.Vector([CAMERA_ACCURACY_GCP_OVERRIDE, CAMERA_ACCURACY_GCP_OVERRIDE, CAMERA_ACCURACY_GCP_OVERRIDE])
     
-    print(f"Başlangıç Bağlantı Noktası (Tie Points): {INITIAL_POINTS}")
-    print(f"Güvenlik Limiti (Minimum): {int(MIN_POINT_LIMIT)} nokta")
+    log_message(f"Kamera Doğruluğu (XYZ) {CAMERA_ACCURACY_GCP_OVERRIDE}m olarak ayarlandı.", Metashape.app.Information)
 
-    # Kamera Optimizasyon Parametreleri (USGS Tablo Adım 11 & 14 uyarınca)
-    # Adaptive fitting: Tie point covariance matrisi için önemlidir.
-    opt_params = dict(fit_f=True, fit_cx=True, fit_cy=True, 
-                      fit_k1=True, fit_k2=True, fit_k3=True, 
-                      fit_p1=True, fit_p2=True, 
-                      fit_b1=False, fit_b2=False, # b1, b2 kapalı (USGS standardı)
-                      adaptive_fitting=True)
+    # 2. USGS Step 12: Temel Kalibrasyon ve Optimizasyon Ayarları
+    log_message(f"--- Adım 12: Kalibrasyon ve Optimasyon Ayarları ---", Metashape.app.Information)
+    
+    # Tie Point Accuracy başlangıç değerini ayarlama
+    current_tie_point_accuracy = TIE_POINT_ACCURACY_START
+    chunk.tiepoint_accuracy = current_tie_point_accuracy
+    log_message(f"Tie Point Accuracy başlangıç değeri {current_tie_point_accuracy} px.", Metashape.app.Information)
 
-    # --- YARDIMCI FONKSİYONLAR ---
+    # Optimize edilecek kamera parametreleri: f, cx, cy, k1, k2, k3, p1, p2
+    optimization_flags = Metashape.CalibrationGroup.Adjustment
+    
+    # İlk Optimizasyon
+    if chunk.transform.matrix is None:
+        chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
+    else:
+        chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True, transform_to_reference=True)
+    log_message("İlk optimizasyon tamamlandı.", Metashape.app.Information)
 
-    def check_stop_criteria(current_rmse, prev_rmse):
-        """
-        İşlemi ne zaman durdurmalıyız?
-        1. Nokta sayısı %10'un altına düştüyse.
-        2. RMSE hatası düşeceğine artmaya başladıysa.
-        3. GCP Hataları (Error), belirlenen Doğruluğu (Accuracy) geçtiyse.
-        """
-        current_points = len(chunk.point_cloud.points)
+    # 3. USGS Step 13: Reprojection Error ve Tie Point Düzeltme Döngüsü
+    log_message(f"--- Adım 13: USGS Reprojection/Tie Point Döngüsü (Hedef: {REPROJECTION_ERROR_TARGET} px) ---", Metashape.app.Information)
+
+    prev_rmse = float('inf')
+    iter_count = 0
+    max_iterations = 5 # Güvenlik için maksimum iterasyon sayısı
+
+    while iter_count < max_iterations:
+        iter_count += 1
+        log_message(f"--- İterasyon {iter_count} Başladı ---", Metashape.app.Information)
         
-        # Kriter 1: Nokta Sayısı
-        if current_points < MIN_POINT_LIMIT:
-            print(f"   DURDURMA SEBEBİ: Nokta sayısı kritik seviyenin altında ({current_points})")
-            return True
-
-        # Kriter 2: RMSE Artışı (Toleranslı Kontrol)
-        if prev_rmse is not None and current_rmse > (prev_rmse * 1.01):
-            print(f"   DURDURMA SEBEBİ: RMSE artmaya başladı! ({prev_rmse:.3f} -> {current_rmse:.3f})")
-            return True
-
-        # Kriter 3: GCP (Referans) Sağlığı
-        markers = [m for m in chunk.markers if m.enabled and m.type == Metashape.Marker.Type.Regular]
-        for m in markers:
-            if m.error and m.reference.accuracy:
-                acc = m.reference.accuracy
-                # Accuracy vektör ise normunu al, float ise direkt kullan
-                acc_val = acc.norm() if isinstance(acc, Metashape.Vector) else acc
-                
-                if m.error.norm() > acc_val:
-                    print(f"   DURDURMA SEBEBİ: {m.label} hatası ({m.error.norm():.3f}m), limiti ({acc_val:.3f}m) aştı.")
-                    return True
-        return False
-
-    def safe_filter_execution(name, criterion, target_level, safety_percent=50):
-        """
-        Adım 11 ve 12 için Güvenli Filtreleme.
-        Hedef değer noktaların %50'sinden fazlasını siliyorsa, limiti otomatik esnetir.
-        """
-        print(f"\n--- {name} (Hedef Değer: {target_level}) ---")
-        f = Metashape.PointCloud.Filter()
-        f.init(chunk, criterion=criterion)
-        values = f.values
-        values.sort()
+        # 3.a Reprojection Error Hesaplama
+        point_cloud = chunk.point_cloud
+        max_reprojection_error = 0.0
         
-        # Hedef değerin üzerindeki nokta sayısı (kötü noktalar)
-        to_delete_count = len([v for v in values if v > target_level])
-        ratio = (to_delete_count / len(values)) * 100
-        
-        threshold = target_level
-        
-        if ratio > safety_percent:
-            print(f"   UYARI: Hedef değer noktaların %{ratio:.1f}'ini siliyor. Güvenlik kilidi devrede.")
-            # Güvenli eşiği bul (%50'ye denk gelen değer)
-            safe_index = int(len(values) * (1 - safety_percent/100))
-            threshold = values[safe_index]
-            print(f"   Revize Edilen Eşik: {threshold:.2f}")
-        
-        f.selectPoints(threshold)
-        n_removed = len([p for p in chunk.point_cloud.points if p.selected])
-        chunk.point_cloud.removeSelectedPoints()
-        print(f"   Silinen Nokta: {n_removed}")
-        
-        chunk.optimizeCameras(**opt_params)
+        for point in point_cloud.points:
+            if not point.valid: continue
+            for proj in point.projections.values():
+                error = proj.error
+                if error > max_reprojection_error:
+                    max_reprojection_error = error
 
-    # =========================================================
-    # ADIM 11: Reconstruction Uncertainty (Geometri Kontrolü)
-    # =========================================================
-    safe_filter_execution("Adım 11: Reconstruction Uncertainty", 
-                          Metashape.PointCloud.Filter.ReconstructionUncertainty, 
-                          10.0)
-
-    # =========================================================
-    # ADIM 12: Projection Accuracy (Piksel Eşleşme Kontrolü)
-    # =========================================================
-    safe_filter_execution("Adım 12: Projection Accuracy", 
-                          Metashape.PointCloud.Filter.ProjectionAccuracy, 
-                          3.0)
-
-    # =========================================================
-    # ADIM 13: Reprojection Error - Faz 1 (Kaba Temizlik)
-    # =========================================================
-    print("\n--- Adım 13: Reprojection Error (Hedef: 0.3 piksel) ---")
-    TARGET_RE_PHASE_1 = 0.3
-    prev_rmse = None
-
-    while True:
-        f = Metashape.PointCloud.Filter()
-        f.init(chunk, criterion=Metashape.PointCloud.Filter.ReprojectionError)
-        values = f.values
-        values.sort()
-        current_max = values[-1]
+        log_message(f"İterasyon {iter_count}: Max Reprojection Error = {max_reprojection_error:.4f} px", Metashape.app.Information)
         
-        if current_max <= TARGET_RE_PHASE_1:
-            print(f"   Faz 1 Tamamlandı (Max Hata: {current_max:.3f})")
-            break
+        # 3.b USGS Kriteri Kontrolü ve Ayıklama
+        if max_reprojection_error > REPROJECTION_ERROR_TARGET:
             
-        if check_stop_criteria(current_max, prev_rmse):
-            break
-        
-        prev_rmse = current_max
+            # Reprojection Error eşiği aşan noktaları kaldır
+            Metashape.PointCloud.selectByReprojection(chunk=chunk, error=REPROJECTION_ERROR_TARGET)
+            chunk.point_cloud.removeSelectedPoints()
+            log_message(f"Reprojection Error eşiği ({REPROJECTION_ERROR_TARGET} px) aşan noktalar silindi.", Metashape.app.Information)
 
-        # %10 Kuralı: Her turda sadece en kötü %10 silinir
-        limit_index = int(len(values) * 0.90) 
-        threshold_10_percent = values[limit_index]
-        
-        apply_threshold = max(threshold_10_percent, TARGET_RE_PHASE_1)
-        
-        print(f"   Max Hata: {current_max:.3f} -> Eşik: {apply_threshold:.3f}")
-        
-        f.selectPoints(apply_threshold)
-        chunk.point_cloud.removeSelectedPoints()
-        chunk.optimizeCameras(**opt_params)
-
-    # =========================================================
-    # ADIM 15: Hassasiyeti Sıkılaştırma & Final Temizlik
-    # =========================================================
-    print("\n--- Adım 15: Tie Point Accuracy Ayarı ve Final Temizlik ---")
-    
-    # 1. Tie Point Accuracy Ayarını Değiştir (1 px -> 0.1 px)
-    # Bu işlem yazılımı GCP'lere daha sıkı tutunmaya zorlar.
-    print("   Ayarlar Güncelleniyor: Tie Point Accuracy 1 -> 0.1")
-    chunk.tiepoint_accuracy = 0.1
-    chunk.optimizeCameras(**opt_params)
-    
-    # 2. Yeni Hedef: RMSE <= 0.18 (USGS Final Standardı)
-    print("   Yeni Hedef: RMSE <= 0.18 piksel")
-    TARGET_RE_PHASE_2 = 0.18
-    
-    while True:
-        f = Metashape.PointCloud.Filter()
-        f.init(chunk, criterion=Metashape.PointCloud.Filter.ReprojectionError)
-        values = f.values
-        values.sort()
-        current_max = values[-1]
-        
-        # Gerçek RMSE değerini al (API sürümüne göre)
-        try:
-            real_rmse = chunk.rms_reprojection_error
-        except:
-            real_rmse = current_max 
-
-        print(f"   Durum -> Max Hata: {current_max:.3f} | Global RMSE: {real_rmse:.3f}")
-
-        if real_rmse <= TARGET_RE_PHASE_2:
-            print("   BAŞARI: Nihai USGS hedefine (RMSE <= 0.18) ulaşıldı.")
-            break
+            # Tie Point Accuracy'yi Sıkılaştırma (Kademeli Azaltma)
+            if current_tie_point_accuracy > TIE_POINT_ACCURACY_MIN:
+                current_tie_point_accuracy = max(TIE_POINT_ACCURACY_MIN, current_tie_point_accuracy - TIE_POINT_REDUCTION_STEP)
+                chunk.tiepoint_accuracy = current_tie_point_accuracy
+                log_message(f"Tie Point Accuracy sıkılaştırıldı: {current_tie_point_accuracy:.2f} px", Metashape.app.Warning)
             
-        if check_stop_criteria(real_rmse, prev_rmse):
-            break
+            # Yeniden Optimizasyon
+            chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
+            log_message("Kameralar yeniden optimize edildi.", Metashape.app.Information)
             
-        prev_rmse = real_rmse
-        
-        # Yine %10 kuralı ile hassas temizlik
-        limit_index = int(len(values) * 0.90)
-        threshold_10_percent = values[limit_index]
-        apply_threshold = threshold_10_percent # Hedefe zorluyoruz
-        
-        f.selectPoints(apply_threshold)
-        n_selected = len([p for p in chunk.point_cloud.points if p.selected])
-        
-        if n_selected == 0:
-            print("   Seçilecek nokta kalmadı.")
-            break
+            # 3.c Durdurma Kriteri Kontrolü (Marker RMSE'ye bak)
+            current_rmse = check_stop_criteria(prev_rmse)
+
+            if current_rmse is True: # Eğer Durdurma Kriteri sağlandıysa
+                break
             
-        chunk.point_cloud.removeSelectedPoints()
-        chunk.optimizeCameras(**opt_params)
-
-    print("\n>>> USGS İş Akışı Başarıyla Tamamlandı.")
-    print(f"Kalan Nokta Sayısı: {len(chunk.point_cloud.points)}")
-    if hasattr(chunk, 'rms_reprojection_error'):
-        print(f"Son RMSE: {chunk.rms_reprojection_error:.4f}")
-
-# Scripti Çalıştır
-usgs_professional_workflow()
+            if current_rmse is False:
+                 log_message("Hata: Durdurma kriteri kontrolü başarısız.", Metashape.app.Critical)
+                 break
+                 
+            prev_rmse = current_rmse # Yeni RMSE değerini bir sonraki iterasyon için sakla
+            
+        else:
+            log_message(f"Max Reprojection Error hedefin altında. Döngü sonlandı.", Metashape.app.Information)
+            break
+        
+    # 4. USGS Step 15: Temizleme ve Final Optimizasyonu
+    log_message("--- Adım 15: Final Optimizasyon ve Kalibrasyon Kilitleme ---", Metashape.app.Information)
+    
+    # Final Optimizasyonu
+    chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
+    log_message("Final Optimizasyon tamamlandı.", Metashape.app.Information)
+    
+    log_message("--- USGS Workflow Başarıyla Tamamlandı ---", Metashape.app.Information)
+    
+# Çalıştırmak için:
+# usgs_professional_workflow()

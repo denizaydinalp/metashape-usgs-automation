@@ -1,24 +1,16 @@
 # ==============================================================================
-# Metashape USGS Otomasyonu - v1.7.0 KESİN ÇÖZÜM
+# Metashape USGS Otomasyonu - v1.8.0 KESİN ÇÖZÜM (v1.7.2 Uyumlu)
 # DAA Mühendislik Bilişim - Deniz Aydınalp
-# Güncelleme: 2025-12-09 | Log Seviyeleri Düzeltildi, Ana Akış Stabil
+# Güncelleme: 2025-12-09 | Log Seviyeleri Kesin Olarak Metashape.Level.XX Olarak Tanımlandı
 # ==============================================================================
 
 import Metashape
 from datetime import datetime
 
-# V1.7.2 İÇİN KRİTİK DÜZELTME: Log seviyelerini Metashape objesinden alıyoruz.
-# Eğer v1.7.2 Metashape.Level yapısını desteklemiyorsa, doğrudan Metashape'den alınır.
-# Bu yapı, en fazla sayıda versiyonla uyumludur.
-try:
-    INFO = Metashape.Information
-    WARN = Metashape.Warning
-    CRIT = Metashape.Critical
-except AttributeError:
-    # Geriye dönük uyumluluk: Eğer doğrudan Information yoksa Level'dan almayı deneriz.
-    INFO = Metashape.Level.Information
-    WARN = Metashape.Level.Warning
-    CRIT = Metashape.Level.Critical
+# V1.7.2 İÇİN KESİN ÇÖZÜM: Log seviyeleri doğrudan Metashape.Level enum'ından alınır.
+INFO = Metashape.Level.Information
+WARN = Metashape.Level.Warning
+CRIT = Metashape.Level.Critical
 
 # --- KRİTİK SABİT DEĞERLER (M3E ve USGS Standartları) ---
 TIE_POINT_ACCURACY_START = 1.0  
@@ -29,8 +21,6 @@ CAMERA_ACCURACY_GCP_OVERRIDE = 10.0
 REPROJECTION_ERROR_TARGET = 0.3 
 OPTIMIZATION_TOLERANCE = 0.0001 
 
-# Not: log_message fonksiyonu kaldırıldı, doğrudan Metashape.app.log kullanılıyor
-# Çünkü fonksiyon tanımı API çakışmasına yol açıyordu.
 
 def check_stop_criteria(prev_rmse):
     """
@@ -45,7 +35,7 @@ def check_stop_criteria(prev_rmse):
     for m in chunk.markers:
         if m.reference.enabled:
             try:
-                error = m.residual.norm() # KRİTİK DÜZELTME KORUNUYOR
+                error = m.residual.norm() # Marker Hatası Çözümü Korundu
             except AttributeError:
                 Metashape.app.log(f"{timestamp} | Hata: Marker objesi 'residual' niteliğine sahip değil.", CRIT)
                 return True 
@@ -71,15 +61,14 @@ def usgs_professional_workflow():
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # TEST AMAÇLI BASİT BİR PRINT. SIFIR HAREKETİ BİTİRMELİ!
-    print("--- V1.7.0 BAŞLANGIÇ ÇAĞRISI OKUNDU ---")
-
+    # TEST AMAÇLI PRINT KALDIRILDI, LOGLAMA DEVAM EDİYOR
+    
     if not Metashape.app.document.chunk:
         Metashape.app.log(f"{timestamp} | Hata: Aktif chunk (iş parçası) bulunamadı.", CRIT)
         return
 
     chunk = Metashape.app.document.chunk
-    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v1.7.0 Başladı ---", INFO)
+    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v1.8.0 Başladı (v1.7.2 Uyumlu) ---", INFO)
 
     # 1. USGS Step 11: Kamera Referans Ayarları (M3E)
     Metashape.app.log(f"{timestamp} | --- Adım 11: Kamera Referans Ayarları (M3E) ---", INFO)

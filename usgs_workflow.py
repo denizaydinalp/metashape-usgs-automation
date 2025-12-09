@@ -1,7 +1,7 @@
 # ==============================================================================
-# Metashape USGS Otomasyonu - v3.0.3 (Metashape 1.7.2 TAM UYUMLU - ÇALIŞIYOR!)
+# Metashape USGS Otomasyonu - v3.1 (M3E STABIL)
 # DAA Mühendislik Bilişim - Deniz Aydınalp
-# Güncelleme: 2025-12-09 | 1.7.2 için log sorunu tamamen çözüldü
+# Durum: 1.7.2 Uyumlu, Loglar Çalışıyor, M3E Mekanik Shutter Ayarlı
 # ==============================================================================
 
 import Metashape
@@ -9,20 +9,20 @@ from datetime import datetime
 
 # --- SABİTLER ---
 TIE_POINT_ACCURACY_START = 1.0
-TIE_POINT_ACCURACY_MIN    = 0.3
-TIE_POINT_REDUCTION_STEP  = 0.2
-CAMERA_ACCURACY_GCP_OVERRIDE = 10.0      # metre
-REPROJECTION_ERROR_TARGET    = 0.3       # piksel
+TIE_POINT_ACCURACY_MIN     = 0.3
+TIE_POINT_REDUCTION_STEP   = 0.2
+CAMERA_ACCURACY_GCP_OVERRIDE = 10.0      # metre (GCP'ye güveniyoruz)
+REPROJECTION_ERROR_TARGET    = 0.3       # piksel (USGS standardı)
 OPTIMIZATION_TOLERANCE        = 0.0001   # metre
 MAX_ITERATIONS                = 6
 
 def log(msg):
-    """1.7.2’de çalışan tek log yöntemi"""
+    """1.7.2 uyumlu print log mekanizması"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{timestamp} | {msg}")
 
 print("\n" + "="*70)
-print("=== DAA MÜHENDİSLİK USGS WORKFLOW v3.0.3 BAŞLADI (Metashape 1.7.2) ===")
+print("=== DAA MÜHENDİSLİK USGS WORKFLOW v3.1 BAŞLADI (M3E Optimized) ===")
 print("="*70 + "\n")
 
 doc = Metashape.app.document
@@ -33,7 +33,7 @@ if not chunk:
     raise Exception("Chunk yok")
 
 # ------------------------------------------------------------------
-# 1. Kamera doğruluklarını ez (GCP varsa çok gevşek bırakıyoruz)
+# 1. Kamera doğruluklarını ayarla (M3E RTK verisini eziyoruz)
 # ------------------------------------------------------------------
 log("Adım 11 → Kamera Referans Doğruluğu ayarlanıyor...")
 for camera in chunk.cameras:
@@ -44,21 +44,23 @@ for camera in chunk.cameras:
 log(f"Kamera doğruluğu {CAMERA_ACCURACY_GCP_OVERRIDE} m yapıldı.")
 
 # ------------------------------------------------------------------
-# 2. İlk optimizasyon
+# 2. İlk optimizasyon (M3E: b1 ve b2 KAPALI)
 # ------------------------------------------------------------------
 log("Adım 12 → İlk optimizasyon başlıyor...")
 chunk.tiepoint_accuracy = TIE_POINT_ACCURACY_START
 log(f"Tie point accuracy = {TIE_POINT_ACCURACY_START} px")
 
-chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, fit_b1=True, fit_b2=True,
+# M3E AYARI: Mekanik shutter olduğu için fit_b1=False, fit_b2=False
+chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, 
+                      fit_b1=False, fit_b2=False, 
                       fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
                       fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
                       adaptive_fitting=True)
 
-log("İlk optimizasyon tamamlandı.")
+log("İlk optimizasyon tamamlandı (M3E parametreleri ile).")
 
 # ------------------------------------------------------------------
-# 3. Reprojection error döngüsü (1.7.2 Filter API ile)
+# 3. Reprojection error döngüsü
 # ------------------------------------------------------------------
 log(f"Adım 13 → Reprojection error döngüsü başlıyor (hedef ≤ {REPROJECTION_ERROR_TARGET} px)")
 
@@ -93,14 +95,15 @@ while iter_count < MAX_ITERATIONS:
         chunk.tiepoint_accuracy = current_tie_accuracy
         log(f"Tie point accuracy sıkılaştırıldı → {current_tie_accuracy:.2f} px")
 
-    # Yeniden optimize et
-    chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, fit_b1=True, fit_b2=True,
+    # Yeniden optimize et (M3E ayarları korundu)
+    chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, 
+                          fit_b1=False, fit_b2=False, 
                           fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
                           fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
                           adaptive_fitting=True)
     log("Re-optimizasyon tamamlandı.")
 
-    # GCP varsa RMSE kontrolü yapıp erken durdur
+    # GCP RMSE kontrolü
     total_err = 0.0
     count = 0
     for marker in chunk.markers:
@@ -111,7 +114,7 @@ while iter_count < MAX_ITERATIONS:
         current_rmse = (total_err / count)**0.5
         log(f"Marker RMSE = {current_rmse:.6f} m")
         if abs(current_rmse - prev_rmse) < OPTIMIZATION_TOLERANCE:
-            log("RMSE değişimi çok küçük → Erken durdurma aktif, döngü durduruluyor.")
+            log("RMSE değişimi çok küçük → Erken durdurma aktif.")
             break
         prev_rmse = current_rmse
 
@@ -119,13 +122,12 @@ while iter_count < MAX_ITERATIONS:
 # 4. Final optimizasyon
 # ------------------------------------------------------------------
 log("Adım 15 → Final optimizasyon yapılıyor...")
-chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, fit_b1=True, fit_b2=True,
+chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True, 
+                      fit_b1=False, fit_b2=False, 
                       fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
                       fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
                       adaptive_fitting=True)
 log("Final optimizasyon tamamlandı.")
 
-log("=== USGS WORKFLOW TAMAMEN BAŞARIYLA BİTTİ! ===")
+log("=== USGS WORKFLOW BAŞARIYLA TAMAMLANDI! ===")
 print("\n" + "="*70)
-print("=== ÇALIŞMA TAMAM! Console loglarını incele, her şey temiz. ===")
-print("="*70)

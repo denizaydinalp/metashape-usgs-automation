@@ -1,11 +1,24 @@
 # ==============================================================================
-# Metashape USGS Otomasyonu - v1.6.0 CERRAHİ DÜZELTME (İlk Çalışan Kod Bazlı)
+# Metashape USGS Otomasyonu - v1.7.0 KESİN ÇÖZÜM
 # DAA Mühendislik Bilişim - Deniz Aydınalp
-# Güncelleme: 2025-12-09 | Sadece Kritik Hata ve Tie Point Döngüsü Eklendi.
+# Güncelleme: 2025-12-09 | Log Seviyeleri Düzeltildi, Ana Akış Stabil
 # ==============================================================================
 
 import Metashape
 from datetime import datetime
+
+# V1.7.2 İÇİN KRİTİK DÜZELTME: Log seviyelerini Metashape objesinden alıyoruz.
+# Eğer v1.7.2 Metashape.Level yapısını desteklemiyorsa, doğrudan Metashape'den alınır.
+# Bu yapı, en fazla sayıda versiyonla uyumludur.
+try:
+    INFO = Metashape.Information
+    WARN = Metashape.Warning
+    CRIT = Metashape.Critical
+except AttributeError:
+    # Geriye dönük uyumluluk: Eğer doğrudan Information yoksa Level'dan almayı deneriz.
+    INFO = Metashape.Level.Information
+    WARN = Metashape.Level.Warning
+    CRIT = Metashape.Level.Critical
 
 # --- KRİTİK SABİT DEĞERLER (M3E ve USGS Standartları) ---
 TIE_POINT_ACCURACY_START = 1.0  
@@ -16,17 +29,12 @@ CAMERA_ACCURACY_GCP_OVERRIDE = 10.0
 REPROJECTION_ERROR_TARGET = 0.3 
 OPTIMIZATION_TOLERANCE = 0.0001 
 
-def log_message(message, level): 
-    """Loglama fonksiyonu. Muhtemel v1.7.2 uyumu için seviyeler doğrudan kullanıldı."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Loglama seviyeleri için orijinal kodun kullandığı yapıyı tercih ediyoruz (Metashape.Information)
-    Metashape.app.log(f"{timestamp} | {message}", level)
-
+# Not: log_message fonksiyonu kaldırıldı, doğrudan Metashape.app.log kullanılıyor
+# Çünkü fonksiyon tanımı API çakışmasına yol açıyordu.
 
 def check_stop_criteria(prev_rmse):
     """
     USGS standardında optimizasyonun durma kriterini (Marker RMSE) kontrol eder.
-    m.error yerine KRİTİK DÜZELTME (m.residual.norm()) içerir.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -37,25 +45,24 @@ def check_stop_criteria(prev_rmse):
     for m in chunk.markers:
         if m.reference.enabled:
             try:
-                # Orijinal kodunuzda hata veren satırın (m.error) API uyumlu karşılığı
-                error = m.residual.norm()
+                error = m.residual.norm() # KRİTİK DÜZELTME KORUNUYOR
             except AttributeError:
-                Metashape.app.log(f"{timestamp} | Hata: Marker objesi 'residual' niteliğine sahip değil. Marker API sorunu.", Metashape.Critical)
+                Metashape.app.log(f"{timestamp} | Hata: Marker objesi 'residual' niteliğine sahip değil.", CRIT)
                 return True 
             
             total_error_sq += error ** 2
             num_markers += 1
 
     if num_markers == 0:
-        Metashape.app.log(f"{timestamp} | Referansı etkin marker (GCP) bulunamadı.", Metashape.Warning)
+        Metashape.app.log(f"{timestamp} | Referansı etkin marker (GCP) bulunamadı.", WARN)
         return False
     
     current_rmse = (total_error_sq / num_markers) ** 0.5 if num_markers > 0 else 0.0
     
-    Metashape.app.log(f"{timestamp} | Optimizasyon Döngüsü - Güncel Marker RMSE (m): {current_rmse:.4f} m", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | Optimizasyon Döngüsü - Güncel Marker RMSE (m): {current_rmse:.4f} m", INFO)
     
     if abs(current_rmse - prev_rmse) < OPTIMIZATION_TOLERANCE:
-        Metashape.app.log(f"{timestamp} | Durdurma Kriteri Sağlandı: RMSE farkı toleransın altında.", Metashape.Information)
+        Metashape.app.log(f"{timestamp} | Durdurma Kriteri Sağlandı: RMSE farkı toleransın altında.", INFO)
         return True
     
     return current_rmse
@@ -64,28 +71,31 @@ def usgs_professional_workflow():
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # TEST AMAÇLI BASİT BİR PRINT. SIFIR HAREKETİ BİTİRMELİ!
+    print("--- V1.7.0 BAŞLANGIÇ ÇAĞRISI OKUNDU ---")
+
     if not Metashape.app.document.chunk:
-        Metashape.app.log(f"{timestamp} | Hata: Aktif chunk (iş parçası) bulunamadı.", Metashape.Critical)
+        Metashape.app.log(f"{timestamp} | Hata: Aktif chunk (iş parçası) bulunamadı.", CRIT)
         return
 
     chunk = Metashape.app.document.chunk
-    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v1.6.0 Başladı (Stabil) ---", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v1.7.0 Başladı ---", INFO)
 
-    # 1. YENİ: USGS Step 11: Kamera Referans Ayarları (M3E)
-    Metashape.app.log(f"{timestamp} | --- Adım 11: Kamera Referans Ayarları (M3E) ---", Metashape.Information)
+    # 1. USGS Step 11: Kamera Referans Ayarları (M3E)
+    Metashape.app.log(f"{timestamp} | --- Adım 11: Kamera Referans Ayarları (M3E) ---", INFO)
     
     for camera in chunk.cameras:
         if camera.reference.enabled:
             camera.reference.accuracy = Metashape.Vector([CAMERA_ACCURACY_GCP_OVERRIDE, CAMERA_ACCURACY_GCP_OVERRIDE, CAMERA_ACCURACY_GCP_OVERRIDE])
     
-    Metashape.app.log(f"{timestamp} | Kamera Doğruluğu (XYZ) {CAMERA_ACCURACY_GCP_OVERRIDE}m olarak ayarlandı (GCP Güvencesi).", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | Kamera Doğruluğu (XYZ) {CAMERA_ACCURACY_GCP_OVERRIDE}m olarak ayarlandı (GCP Güvencesi).", INFO)
 
-    # 2. YENİ: USGS Step 12: Temel Kalibrasyon ve Optimizasyon Ayarları
-    Metashape.app.log(f"{timestamp} | --- Adım 12: Kalibrasyon ve Optimasyon Ayarları ---", Metashape.Information)
+    # 2. USGS Step 12: Temel Kalibrasyon ve Optimizasyon Ayarları
+    Metashape.app.log(f"{timestamp} | --- Adım 12: Kalibrasyon ve Optimasyon Ayarları ---", INFO)
     
     current_tie_point_accuracy = TIE_POINT_ACCURACY_START
     chunk.tiepoint_accuracy = current_tie_point_accuracy
-    Metashape.app.log(f"{timestamp} | Tie Point Accuracy başlangıç değeri {current_tie_point_accuracy} px.", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | Tie Point Accuracy başlangıç değeri {current_tie_point_accuracy} px.", INFO)
 
     optimization_flags = Metashape.CalibrationGroup.Adjustment
     
@@ -93,10 +103,10 @@ def usgs_professional_workflow():
         chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
     else:
         chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True, transform_to_reference=True)
-    Metashape.app.log(f"{timestamp} | İlk optimizasyon tamamlandı.", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | İlk optimizasyon tamamlandı.", INFO)
 
-    # 3. YENİ: USGS Step 13: Reprojection Error ve Tie Point Düzeltme Döngüsü
-    Metashape.app.log(f"{timestamp} | --- Adım 13: USGS Reprojection/Tie Point Döngüsü (Hedef: {REPROJECTION_ERROR_TARGET} px) ---", Metashape.Information)
+    # 3. USGS Step 13: Reprojection Error ve Tie Point Düzeltme Döngüsü
+    Metashape.app.log(f"{timestamp} | --- Adım 13: USGS Reprojection/Tie Point Döngüsü (Hedef: {REPROJECTION_ERROR_TARGET} px) ---", INFO)
 
     prev_rmse = float('inf')
     iter_count = 0
@@ -104,7 +114,7 @@ def usgs_professional_workflow():
 
     while iter_count < max_iterations:
         iter_count += 1
-        Metashape.app.log(f"{timestamp} | --- İterasyon {iter_count} Başladı ---", Metashape.Information)
+        Metashape.app.log(f"{timestamp} | --- İterasyon {iter_count} Başladı ---", INFO)
         
         # 3.a Reprojection Error Hesaplama
         point_cloud = chunk.point_cloud
@@ -117,23 +127,23 @@ def usgs_professional_workflow():
                 if error > max_reprojection_error:
                     max_reprojection_error = error
 
-        Metashape.app.log(f"{timestamp} | İterasyon {iter_count}: Max Reprojection Error = {max_reprojection_error:.4f} px", Metashape.Information)
+        Metashape.app.log(f"{timestamp} | İterasyon {iter_count}: Max Reprojection Error = {max_reprojection_error:.4f} px", INFO)
         
         # 3.b USGS Kriteri Kontrolü ve Ayıklama
         if max_reprojection_error > REPROJECTION_ERROR_TARGET:
             
             Metashape.PointCloud.selectByReprojection(chunk=chunk, error=REPROJECTION_ERROR_TARGET)
             chunk.point_cloud.removeSelectedPoints()
-            Metashape.app.log(f"{timestamp} | Reprojection Error eşiği ({REPROJECTION_ERROR_TARGET} px) aşan noktalar silindi.", Metashape.Information)
+            Metashape.app.log(f"{timestamp} | Reprojection Error eşiği ({REPROJECTION_ERROR_TARGET} px) aşan noktalar silindi.", INFO)
 
-            # YENİ: Tie Point Accuracy Sıkılaştırma
+            # Tie Point Accuracy Sıkılaştırma
             if current_tie_point_accuracy > TIE_POINT_ACCURACY_MIN:
                 current_tie_point_accuracy = max(TIE_POINT_ACCURACY_MIN, current_tie_point_accuracy - TIE_POINT_REDUCTION_STEP)
                 chunk.tiepoint_accuracy = current_tie_point_accuracy
-                Metashape.app.log(f"{timestamp} | Tie Point Accuracy sıkılaştırıldı: {current_tie_point_accuracy:.2f} px", Metashape.Warning)
+                Metashape.app.log(f"{timestamp} | Tie Point Accuracy sıkılaştırıldı: {current_tie_point_accuracy:.2f} px", WARN)
             
             chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
-            Metashape.app.log(f"{timestamp} | Kameralar yeniden optimize edildi.", Metashape.Information)
+            Metashape.app.log(f"{timestamp} | Kameralar yeniden optimize edildi.", INFO)
             
             current_rmse = check_stop_criteria(prev_rmse)
 
@@ -141,21 +151,21 @@ def usgs_professional_workflow():
                 break
             
             if current_rmse is False:
-                 Metashape.app.log(f"{timestamp} | Hata: Durdurma kriteri kontrolü başarısız.", Metashape.Critical)
+                 Metashape.app.log(f"{timestamp} | Hata: Durdurma kriteri kontrolü başarısız.", CRIT)
                  break
                  
             prev_rmse = current_rmse
             
         else:
-            Metashape.app.log(f"{timestamp} | Max Reprojection Error hedefin altında. Döngü sonlandı.", Metashape.Information)
+            Metashape.app.log(f"{timestamp} | Max Reprojection Error hedefin altında. Döngü sonlandı.", INFO)
             break
         
-    # 4. YENİ: USGS Step 15: Temizleme ve Final Optimizasyonu
-    Metashape.app.log(f"{timestamp} | --- Adım 15: Final Optimizasyon ve Kalibrasyon Kilitleme ---", Metashape.Information)
+    # 4. USGS Step 15: Temizleme ve Final Optimizasyonu
+    Metashape.app.log(f"{timestamp} | --- Adım 15: Final Optimizasyon ve Kalibrasyon Kilitleme ---", INFO)
     
     chunk.optimizeCameras(optimization_flags=optimization_flags, adaptive_fitting=True)
-    Metashape.app.log(f"{timestamp} | Final Optimizasyon tamamlandı.", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | Final Optimizasyon tamamlandı.", INFO)
     
-    Metashape.app.log(f"{timestamp} | --- USGS Workflow Başarıyla Tamamlandı ---", Metashape.Information)
+    Metashape.app.log(f"{timestamp} | --- USGS Workflow Başarıyla Tamamlandı ---", INFO)
     
 # usgs_professional_workflow()

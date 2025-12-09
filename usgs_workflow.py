@@ -1,16 +1,17 @@
 # ==============================================================================
-# Metashape USGS Otomasyonu - v1.8.0 KESİN ÇÖZÜM (v1.7.2 Uyumlu)
+# Metashape USGS Otomasyonu - v2.0.0 NİHAİ STABİL ÇÖZÜM (SAYISAL LOG)
 # DAA Mühendislik Bilişim - Deniz Aydınalp
-# Güncelleme: 2025-12-09 | Log Seviyeleri Kesin Olarak Metashape.Level.XX Olarak Tanımlandı
+# Güncelleme: 2025-12-09 | Log Seviyeleri Direkt Sayısal Değerlere Sabitlendi
 # ==============================================================================
 
 import Metashape
 from datetime import datetime
 
-# V1.7.2 İÇİN KESİN ÇÖZÜM: Log seviyeleri doğrudan Metashape.Level enum'ından alınır.
-INFO = Metashape.Level.Information
-WARN = Metashape.Level.Warning
-CRIT = Metashape.Level.Critical
+# V1.7.2 İÇİN KESİN ÇÖZÜM: LOG SEVİYELERİ SAYISAL DEĞERLERİNE SABİTLENDİ.
+# Bu, API modüllerinin veya isimlerinin aranmasını engeller.
+INFO = 4 # Metashape.Information
+WARN = 2 # Metashape.Warning
+CRIT = 1 # Metashape.Critical
 
 # --- KRİTİK SABİT DEĞERLER (M3E ve USGS Standartları) ---
 TIE_POINT_ACCURACY_START = 1.0  
@@ -60,15 +61,13 @@ def check_stop_criteria(prev_rmse):
 def usgs_professional_workflow():
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # TEST AMAÇLI PRINT KALDIRILDI, LOGLAMA DEVAM EDİYOR
     
     if not Metashape.app.document.chunk:
         Metashape.app.log(f"{timestamp} | Hata: Aktif chunk (iş parçası) bulunamadı.", CRIT)
         return
 
     chunk = Metashape.app.document.chunk
-    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v1.8.0 Başladı (v1.7.2 Uyumlu) ---", INFO)
+    Metashape.app.log(f"{timestamp} | --- DAA Mühendislik Fotogrametri USGS Workflow v2.0.0 BAŞLADI (NİHAİ STABİL) ---", INFO)
 
     # 1. USGS Step 11: Kamera Referans Ayarları (M3E)
     Metashape.app.log(f"{timestamp} | --- Adım 11: Kamera Referans Ayarları (M3E) ---", INFO)

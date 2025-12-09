@@ -1,157 +1,276 @@
 # ==============================================================================
-# Metashape USGS PROFESSIONAL – v4.2 LEGACY (METASHAPE 1.6 UYUMLU)
+# Metashape USGS PROFESSIONAL – v6.1 PLATINUM EDITION
 # DAA Mühendislik – Deniz Aydınalp – 2025
 # ------------------------------------------------------------------------------
-# FARK: 1.7+ yerine 1.6 API mimarisi (PointCloud Sınıfı) kullanıldı.
-# ÖZELLİKLER: M3E (b1/b2 Kapalı), USGS 0.3 px, %50 Güvenlik Freni.
+# HEDEF: M3E ile USGS Standartlarında (RMSE <= 0.18 px)
+# API: Metashape 1.6 Uyumlu (Legacy)
+# YENİLİK: GCP (Marker) Doğruluğu en başta 0.02m (2cm) olarak sabitleniyor.
+# AKIŞ: Hazırlık -> RU(10) -> PA(2) -> TPA(0.2) -> RE(0.18)
 # ==============================================================================
 
 import Metashape
 from datetime import datetime
 
-# --- KULLANICI AYARLARI ---
-REPROJECTION_ERROR_TARGET    = 0.3    # Hedef hata (piksel)
-MIN_POINT_RATIO_PERCENT      = 50     # Güvenlik freni (%)
-TIE_POINT_ACCURACY_MIN       = 0.5    # Minimum Tie Point Accuracy
-CAMERA_ACCURACY_GCP_OVERRIDE = 10.0   # M3E RTK verisini ezmek için (m)
+# --- KULLANICI HEDEFLERİ ---
+TARGET_RU = 10.0       # Reconstruction Uncertainty
+TARGET_PA = 2.0        # Projection Accuracy
+TARGET_RE = 0.18       # FİNAL Reprojection Error Hedefi
+
+# --- SİSTEM AYARLARI ---
+GCP_ACCURACY_M        = 0.02  # GCP Koordinat Doğruluğu (2 cm)
+CAMERA_ACCURACY_GCP   = 10.0  # M3E RTK verisini ezmek için (m)
+CRITICAL_TIE_ACCURACY = 0.2   # Final aşamada geçilecek Tie Point Accuracy
+MIN_REMAINING_PERCENT = 10.0  # Güvenlik Limiti (%)
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-print("\n" + "="*85)
-print("   DAA MÜHENDİSLİK | USGS WORKFLOW v4.2 LEGACY (v1.6) | ADANA/TR")
-print("="*85 + "\n")
+def print_header(title):
+    print("\n" + "="*85)
+    print(f"   {title}")
+    print("="*85)
+
+# --- BAŞLANGIÇ ---
+print_header("DAA MÜHENDİSLİK | USGS v6.1 PLATINUM (GCP 2cm) | ADANA/TR")
 
 chunk = Metashape.app.document.chunk
 if not chunk:
     raise Exception("HATA: Çalışılacak aktif chunk bulunamadı!")
 
 # --------------------------------------------------------------------------------
-# ADIM 1: Hazırlık ve M3E Referans Ayarları
+# ADIM 0: HAZIRLIK VE REFERANS AYARLARI
 # --------------------------------------------------------------------------------
-log("Sistem Kontrolü (v1.6): M3E referans ayarları...")
+log("Sistem Hazırlığı Başlatılıyor...")
 
+# 1. Kamera Doğrulukları (M3E RTK vs GCP)
+# Kamerayı 10m yapıyoruz ki model GCP'ye yapışsın.
 for cam in chunk.cameras:
     if cam.reference.enabled:
-        cam.reference.accuracy = Metashape.Vector([CAMERA_ACCURACY_GCP_OVERRIDE, 
-                                                   CAMERA_ACCURACY_GCP_OVERRIDE, 
-                                                   CAMERA_ACCURACY_GCP_OVERRIDE])
+        cam.reference.accuracy = Metashape.Vector([CAMERA_ACCURACY_GCP, CAMERA_ACCURACY_GCP, CAMERA_ACCURACY_GCP])
     else:
         cam.reference.accuracy = Metashape.Vector([10, 10, 20])
 
-chunk.marker_projection_accuracy = 0.5 
-chunk.tiepoint_accuracy = 1.0           
+# 2. GCP (Marker) Doğrulukları (YENİ: 0.02m)
+log(f"-> GCP (Marker) Koordinat Doğruluğu Ayarlanıyor: {GCP_ACCURACY_M}m")
+for m in chunk.markers:
+    if m.reference.enabled:
+        m.reference.accuracy = Metashape.Vector([GCP_ACCURACY_M, GCP_ACCURACY_M, GCP_ACCURACY_M])
 
-log(f"Kamera Referans: {CAMERA_ACCURACY_GCP_OVERRIDE}m | Marker: 0.5 px")
+# 3. Piksel Doğrulukları
+chunk.marker_projection_accuracy = 0.5  # İnsan tıklaması
+chunk.tiepoint_accuracy = 1.0           # Başlangıç gevşekliği
 
-# v1.6'da 'tie_points' yerine 'point_cloud' kullanılır
-initial_points = len([p for p in chunk.point_cloud.points if p.valid])
-log(f"Başlangıç Nokta Sayısı: {initial_points}")
+log(f"-> Kamera Ref: {CAMERA_ACCURACY_GCP}m | GCP Ref: {GCP_ACCURACY_M}m")
 
-# --------------------------------------------------------------------------------
-# ADIM 2: İlk Optimizasyon (M3E: b1/b2 KAPALI)
-# --------------------------------------------------------------------------------
-log("İlk Optimizasyon (b1/b2 KAPALI)...")
-
+# 4. Başlangıç Optimizasyonu (M3E ve Stabilite Korumalı)
+log("-> Başlangıç Optimizasyonu (b1/b2, k4, p3, p4 KAPALI)...")
 chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
-                      fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
-                      fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
-                      fit_b1=False, fit_b2=False, # M3E Mekanik Shutter Ayarı
+                      fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False, # KAPALI
+                      fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False, # KAPALI
+                      fit_b1=False, fit_b2=False,                           # KAPALI
                       adaptive_fitting=True)
-log("İlk optimizasyon tamamlandı.")
 
-# --------------------------------------------------------------------------------
-# ADIM 3: Akıllı Temizlik Döngüsü (v1.6 PointCloud API)
-# --------------------------------------------------------------------------------
-log(f"Temizlik Döngüsü Başlıyor -> Hedef: {REPROJECTION_ERROR_TARGET} px")
+# Orijinal Nokta Sayısı
+initial_points = len([p for p in chunk.point_cloud.points if p.valid])
+log(f"✅ Hazırlık Tamam. Başlangıç Nokta Sayısı: {initial_points}")
 
-current_threshold = 1.0
+
+# ================================================================================
+# AŞAMA 1: RECONSTRUCTION UNCERTAINTY (Hedef: 10 | Fren: %50)
+# ================================================================================
+print_header(f"AŞAMA 1: Reconstruction Uncertainty (Hedef: {TARGET_RU})")
+
 step = 0
-
 while True:
     step += 1
     
-    # v1.6 API DEĞİŞİKLİĞİ: PointCloud.Filter kullanımı
     f = Metashape.PointCloud.Filter()
-    f.init(chunk, criterion=Metashape.PointCloud.Filter.ReprojectionError)
-    
-    # Değerleri al (v1.6 uyumlu)
+    f.init(chunk, criterion=Metashape.PointCloud.Filter.ReconstructionUncertainty)
     values = f.values
     valid_values = [v for i, v in enumerate(values) if chunk.point_cloud.points[i].valid]
+    
+    if not valid_values: break
+    valid_values.sort(reverse=True)
+    
+    max_val = valid_values[0]
+    total_valid = len(valid_values)
+    
+    log(f"--- Tur {step} ---")
+    log(f"   Mevcut Max RU: {max_val:.2f} (Hedef: {TARGET_RU})")
 
-    if not valid_values:
-        log("HATA: Geçerli nokta kalmadı!")
+    if max_val <= TARGET_RU:
+        log(f"✅ AŞAMA 1 BAŞARILI.")
         break
         
-    max_err = max(valid_values)
-    log(f"--- Tur {step} | Max Hata: {max_err:.4f} px | Eşik: {current_threshold:.2f} px ---")
-
-    # Başarı Kontrolü
-    if max_err <= REPROJECTION_ERROR_TARGET:
-        log(f"✅ HEDEF BAŞARILDI: {max_err:.4f} px")
-        break
-
-    # Güvenlik Freni
-    current_points_count = len(valid_values)
-    ratio = (current_points_count / initial_points) * 100
-    if ratio < MIN_POINT_RATIO_PERCENT:
-        log(f"🛑 GÜVENLİK FRENİ: %{ratio:.1f} kaldı. Döngü durduruluyor.")
-        break
-
-    # Eşik Kontrolü
-    if current_threshold < REPROJECTION_ERROR_TARGET:
-        current_threshold = REPROJECTION_ERROR_TARGET
-
-    # Seçim ve Silme (v1.6 PointCloud API)
-    f.selectPoints(current_threshold)
-    # v1.6'da nselected PointCloud üzerinden okunur muhtemelen, ama güvenli olsun diye remove diyoruz.
-    # Metashape 1.6'da removeSelectedPoints PointCloud üzerindedir.
+    # %50 Fren Hesabı
+    count_over = len([v for v in valid_values if v > TARGET_RU])
+    ratio = (count_over / total_valid) * 100
+    
+    threshold = TARGET_RU
+    if ratio > 50.0:
+        log(f"   ⚠️ Hedef çok agresif (%{ratio:.1f}). %50 freni devrede.")
+        threshold = valid_values[int(total_valid * 0.50)]
+        if threshold < TARGET_RU: threshold = TARGET_RU
+    
+    f.selectPoints(threshold)
     chunk.point_cloud.removeSelectedPoints()
     
-    # Silinen nokta kontrolü (Basit matematik ile)
-    # v1.6'da nselected property'si bazen farklı olabilir, o yüzden log mesajını genel tutuyoruz.
-    log(f"Temizlik yapıldı (Eşik: {current_threshold:.2f} px).")
-
-    # Eşik düşürme mantığı
-    # Eğer max hata eşiğin çok altındaysa hızlı düş, değilse yavaş düş
-    if max_err < current_threshold:
-        current_threshold = max(REPROJECTION_ERROR_TARGET, max_err * 0.9)
-    else:
-        current_threshold -= 0.1
-        if current_threshold < REPROJECTION_ERROR_TARGET:
-            current_threshold = REPROJECTION_ERROR_TARGET
-
-    # Tie Point Accuracy Sıkılaştırma
-    new_acc = max(TIE_POINT_ACCURACY_MIN, chunk.tiepoint_accuracy - 0.1)
-    chunk.tiepoint_accuracy = new_acc
-    
-    # Re-Optimizasyon
     chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
-                          fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
-                          fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
-                          fit_b1=False, fit_b2=False, 
-                          adaptive_fitting=True)
+                          fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False,
+                          fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False,
+                          fit_b1=False, fit_b2=False, adaptive_fitting=True)
 
-# --------------------------------------------------------------------------------
-# ADIM 4: Final Rapor
-# --------------------------------------------------------------------------------
-log("Adım 15: Final Optimizasyon...")
+
+# ================================================================================
+# AŞAMA 2: PROJECTION ACCURACY (Hedef: 2.0 | Fren: %50)
+# ================================================================================
+print_header(f"AŞAMA 2: Projection Accuracy (Hedef: {TARGET_PA})")
+
+step = 0
+while True:
+    step += 1
+    f = Metashape.PointCloud.Filter()
+    f.init(chunk, criterion=Metashape.PointCloud.Filter.ProjectionAccuracy)
+    values = f.values
+    valid_values = [v for i, v in enumerate(values) if chunk.point_cloud.points[i].valid]
+    
+    if not valid_values: break
+    valid_values.sort(reverse=True)
+    max_val = valid_values[0]
+    total_valid = len(valid_values)
+    
+    log(f"--- Tur {step} ---")
+    log(f"   Mevcut Max PA: {max_val:.2f} (Hedef: {TARGET_PA})")
+
+    if max_val <= TARGET_PA:
+        log(f"✅ AŞAMA 2 BAŞARILI.")
+        break
+        
+    count_over = len([v for v in valid_values if v > TARGET_PA])
+    ratio = (count_over / total_valid) * 100
+    
+    threshold = TARGET_PA
+    if ratio > 50.0:
+        log(f"   ⚠️ Hedef çok agresif (%{ratio:.1f}). %50 freni devrede.")
+        threshold = valid_values[int(total_valid * 0.50)]
+        if threshold < TARGET_PA: threshold = TARGET_PA
+        
+    f.selectPoints(threshold)
+    chunk.point_cloud.removeSelectedPoints()
+    
+    chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
+                          fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False,
+                          fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False,
+                          fit_b1=False, fit_b2=False, adaptive_fitting=True)
+
+
+# ================================================================================
+# ARA GEÇİŞ: TIE POINT ACCURACY SIKILAŞTIRMA
+# ================================================================================
+print_header(f"ARA GEÇİŞ: Tie Point Accuracy -> {CRITICAL_TIE_ACCURACY} px")
+log("⚠️ Model sıkıştırılıyor...")
+
+chunk.tiepoint_accuracy = CRITICAL_TIE_ACCURACY
 chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
-                      fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=True,
-                      fit_p1=True, fit_p2=True, fit_p3=True, fit_p4=True,
-                      fit_b1=False, fit_b2=False,
+                      fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False,
+                      fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False,
+                      fit_b1=False, fit_b2=False, adaptive_fitting=True)
+
+
+# ================================================================================
+# AŞAMA 3: REPROJECTION ERROR (Hedef: 0.18 | Fren: %10 | Stop: Error>Accuracy)
+# ================================================================================
+print_header(f"AŞAMA 3: Reprojection Error (Hedef: {TARGET_RE} px)")
+log(f"Stop Kuralları: 1) Hedef 2) < %{MIN_REMAINING_PERCENT} Nokta 3) Error > Accuracy ({GCP_ACCURACY_M}m)")
+
+step = 0
+max_loops = 50
+
+while step < max_loops:
+    step += 1
+    
+    f = Metashape.PointCloud.Filter()
+    f.init(chunk, criterion=Metashape.PointCloud.Filter.ReprojectionError)
+    values = f.values
+    valid_values = [v for i, v in enumerate(values) if chunk.point_cloud.points[i].valid]
+    
+    if not valid_values: break
+    valid_values.sort(reverse=True)
+    
+    max_err = valid_values[0]
+    total_now = len(valid_values)
+    
+    log(f"--- Tur {step} | Max Hata: {max_err:.4f} px ---")
+    
+    # --- STOP 1: Hedef ---
+    if max_err <= TARGET_RE:
+        log(f"✅ HEDEF BAŞARILDI.")
+        break
+        
+    # --- STOP 2: Nokta Güvenliği ---
+    remaining_ratio = (total_now / initial_points) * 100
+    if remaining_ratio < MIN_REMAINING_PERCENT:
+        log(f"🛑 STOP: Kalan nokta %{remaining_ratio:.1f} (Riskli seviye).")
+        break
+        
+    # --- STOP 3: Error > Accuracy (GCP Kontrolü) ---
+    accuracy_fail = False
+    for m in chunk.markers:
+        if m.reference.enabled and m.position:
+            # Kullanıcı doğruluğu (Bizim atadığımız 0.02)
+            user_acc = m.reference.accuracy[0] if m.reference.accuracy else 0.02
+            current_err = m.residual.norm()
+            
+            if current_err > user_acc:
+                log(f"🛑 STOP: Marker '{m.label}' Hatası ({current_err:.3f}m) > Doğruluk ({user_acc:.3f}m)")
+                accuracy_fail = True
+                break
+    
+    if accuracy_fail:
+        break
+
+    # --- SİLME (%10 Cerrahi) ---
+    count_over = len([v for v in valid_values if v > TARGET_RE])
+    ratio_over = (count_over / total_now) * 100
+    
+    threshold = TARGET_RE
+    if ratio_over > 10.0:
+        log(f"   ⚠️ Hedef %{ratio_over:.1f} siliyor. %10 cerrahi kesim.")
+        threshold = valid_values[int(total_now * 0.10)]
+        if threshold < TARGET_RE: threshold = TARGET_RE
+    else:
+        log(f"   Durum Normal: Direkt hedef uygulanıyor.")
+
+    f.selectPoints(threshold)
+    chunk.point_cloud.removeSelectedPoints()
+    
+    # Optimize
+    chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
+                          fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False,
+                          fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False,
+                          fit_b1=False, fit_b2=False, adaptive_fitting=True)
+
+
+# ================================================================================
+# FİNAL RAPOR
+# ================================================================================
+print_header("FİNAL OPTİMİZASYON (Full Parametreler)")
+# Son bir kez kilitle, ek parametreleri aç
+chunk.optimizeCameras(fit_f=True, fit_cx=True, fit_cy=True,
+                      fit_k1=True, fit_k2=True, fit_k3=True, fit_k4=False,
+                      fit_p1=True, fit_p2=True, fit_p3=False, fit_p4=False,
+                      fit_b1=False, fit_b2=False, 
+                      fit_corrections=True, tiepoint_covariance=True,
                       adaptive_fitting=True)
 
-# Son istatistikler (v1.6 uyumlu)
 f.init(chunk, criterion=Metashape.PointCloud.Filter.ReprojectionError)
 final_vals = [v for i, v in enumerate(f.values) if chunk.point_cloud.points[i].valid]
 final_max = max(final_vals) if final_vals else 0
+removed_total = 100 - ((len(final_vals) / initial_points) * 100)
 
-print("\n" + "="*85)
-print(f"✅ İŞLEM TAMAMLANDI (v1.6 UYUMLU)")
-print(f"🎯 Final Max Reprojection Error : {final_max:.4f} px")
-print(f"🔍 Final Tie Point Accuracy     : {chunk.tiepoint_accuracy} px")
-print("="*85)
+print(f"🎯 Final Max Reprojection : {final_max:.4f} px")
+print(f"📉 Toplam Silinen       : %{removed_total:.1f}")
+print(f"🔍 Final Tie Point Acc    : {chunk.tiepoint_accuracy:.2f} px")
 
 # GCP RMSE
 gcp_sq_sum = 0
@@ -163,7 +282,7 @@ for m in chunk.markers:
 
 if gcp_count > 0:
     gcp_rmse = (gcp_sq_sum / gcp_count)**0.5
-    print(f"📏 Marker RMSE: {gcp_rmse*100:.3f} cm")
+    print(f"📏 GCP/Marker RMSE        : {gcp_rmse*100:.3f} cm")
 else:
-    print("ℹ️ Aktif GCP bulunamadı.")
+    print("ℹ️  Aktif GCP yok.")
 print("="*85)
